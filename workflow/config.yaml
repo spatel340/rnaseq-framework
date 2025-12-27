@@ -8,7 +8,6 @@ samples_tsv: "data/metadata/samples.tsv"
 ref_dir: "resources/ref"
 # Use "current" GENCODE human release page as your source-of-truth;
 # we store the direct URL here so the workflow is fully reproducible.
-# (You can change this later if you prefer a specific release.)
 # GENCODE gene annotation (for tx2gene)
 transcriptome_fasta_gz_url: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.transcripts.fa.gz"
 annotation_gtf_gz_url: "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_49/gencode.v49.annotation.gtf.gz"
