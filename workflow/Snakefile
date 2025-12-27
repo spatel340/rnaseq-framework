@@ -1,0 +1,214 @@
+import csv
+from pathlib import Path
+
+configfile: "workflow/config.yaml"
+
+SAMPLES_TSV = config["samples_tsv"]
+FASTQ_DIR = Path(config["fastq_dir"])
+THREADS = int(config.get("threads", 4))
+
+# Salmon config
+REF_DIR = Path(config["ref_dir"])
+TRANSCRIPTOME_URL = config["transcriptome_fasta_gz_url"]
+TRANSCRIPTOME_FASTA_GZ = str(REF_DIR / "transcripts.fa.gz")
+SALMON_INDEX_DIR = config["salmon_index_dir"]
+SALMON_QUANT_DIR = Path(config["salmon_quant_dir"])
+
+# Read samples.tsv
+samples = []
+srr_map = {}
+with open(SAMPLES_TSV, newline="") as f:
+    reader = csv.DictReader(f, delimiter="\t")
+    for row in reader:
+        sample = row["sample_id"]
+        samples.append(sample)
+        srr_map[sample] = row["srr"]
+
+rule all:
+    input:
+        # QC
+        "results/qc/multiqc_report.html",
+        expand("results/qc/fastqc/{sample}_1_fastqc.html", sample=samples),
+        expand("results/qc/fastqc/{sample}_2_fastqc.html", sample=samples),
+
+        # Quant
+        expand(str(SALMON_QUANT_DIR / "{sample}" / "quant.sf"), sample=samples),
+
+        # Differential expression
+        "results/de/deseq2_results.tsv",
+
+        # Figures + enrichment
+        "results/figures/volcano.pdf",
+        "results/figures/go_bp_dotplot.pdf",
+        "results/enrichment/go_bp.tsv",
+
+# -------------------- Milestone 1: SRA -> FASTQ -> QC --------------------
+
+rule fetch_sra:
+    output:
+        "results/logs/sra/{sample}.prefetch.done"
+    params:
+        srr=lambda wc: srr_map[wc.sample]
+    conda:
+        "envs/qc.yaml"
+    shell:
+        r"""
+        mkdir -p results/logs/sra
+        prefetch {params.srr} 2>&1 | tee results/logs/sra/{wildcards.sample}.prefetch.log
+        touch {output}
+        """
+
+rule fasterq_dump:
+    input:
+        "results/logs/sra/{sample}.prefetch.done"
+    output:
+        r1=str(FASTQ_DIR / "{sample}_1.fastq.gz"),
+        r2=str(FASTQ_DIR / "{sample}_2.fastq.gz")
+    params:
+        srr=lambda wc: srr_map[wc.sample]
+    threads: THREADS
+    conda:
+        "envs/qc.yaml"
+    shell:
+        r"""
+        mkdir -p {FASTQ_DIR} results/logs/sra
+        tmpdir=/tmp/sra_{wildcards.sample}
+        mkdir -p $tmpdir
+
+        fasterq-dump {params.srr} --split-files -e {threads} -O {FASTQ_DIR} -t $tmpdir \
+          2>&1 | tee results/logs/sra/{wildcards.sample}.fasterq.log
+
+        rm -rf $tmpdir
+
+        gzip -f {FASTQ_DIR}/{params.srr}_1.fastq
+        gzip -f {FASTQ_DIR}/{params.srr}_2.fastq
+
+        mv -f {FASTQ_DIR}/{params.srr}_1.fastq.gz {output.r1}
+        mv -f {FASTQ_DIR}/{params.srr}_2.fastq.gz {output.r2}
+        """
+
+rule fastqc:
+    input:
+        r1=str(FASTQ_DIR / "{sample}_1.fastq.gz"),
+        r2=str(FASTQ_DIR / "{sample}_2.fastq.gz")
+    output:
+        html1="results/qc/fastqc/{sample}_1_fastqc.html",
+        html2="results/qc/fastqc/{sample}_2_fastqc.html",
+        zip1="results/qc/fastqc/{sample}_1_fastqc.zip",
+        zip2="results/qc/fastqc/{sample}_2_fastqc.zip"
+    threads: 2
+    conda:
+        "envs/qc.yaml"
+    shell:
+        r"""
+        mkdir -p results/qc/fastqc
+        fastqc -t {threads} -o results/qc/fastqc {input.r1} {input.r2}
+        """
+
+rule multiqc:
+    input:
+        expand("results/qc/fastqc/{sample}_1_fastqc.zip", sample=samples),
+        expand("results/qc/fastqc/{sample}_2_fastqc.zip", sample=samples)
+    output:
+        "results/qc/multiqc_report.html"
+    conda:
+        "envs/qc.yaml"
+    shell:
+        r"""
+        mkdir -p results/qc
+        multiqc results/qc/fastqc -o results/qc
+        """
+
+# -------------------- Milestone 2: Salmon quantification --------------------
+
+rule download_transcriptome:
+    output:
+        TRANSCRIPTOME_FASTA_GZ
+    conda:
+        "envs/salmon.yaml"
+    shell:
+        r"""
+        mkdir -p {REF_DIR}
+        wget -O {output} "{TRANSCRIPTOME_URL}"
+        """
+
+rule salmon_index:
+    input:
+        TRANSCRIPTOME_FASTA_GZ
+    output:
+        directory(SALMON_INDEX_DIR)
+    threads: THREADS
+    conda:
+        "envs/salmon.yaml"
+    shell:
+        r"""
+        mkdir -p {SALMON_INDEX_DIR}
+        salmon index -t {input} -i {SALMON_INDEX_DIR} -p {threads}
+        """
+
+rule salmon_quant:
+    input:
+        idx=SALMON_INDEX_DIR,
+        r1=str(FASTQ_DIR / "{sample}_1.fastq.gz"),
+        r2=str(FASTQ_DIR / "{sample}_2.fastq.gz")
+    output:
+        quant=str(SALMON_QUANT_DIR / "{sample}" / "quant.sf")
+    threads: THREADS
+    conda:
+        "envs/salmon.yaml"
+    shell:
+        r"""
+        mkdir -p {SALMON_QUANT_DIR}/{wildcards.sample}
+        salmon quant -i {input.idx} -l A \
+          -1 {input.r1} -2 {input.r2} \
+          -p {threads} \
+          --validateMappings --gcBias \
+          -o {SALMON_QUANT_DIR}/{wildcards.sample}
+        """
+
+# -------------------- Milestone 3: tximport + DESeq2 --------------------
+
+ANNOT_URL = config["annotation_gtf_gz_url"]
+ANNOT_GTF_GZ = str(REF_DIR / "annotation.gtf.gz")
+
+rule download_gtf:
+    output:
+        ANNOT_GTF_GZ
+    conda:
+        "envs/salmon.yaml"
+    shell:
+        r"""
+        mkdir -p {REF_DIR}
+        wget -O {output} "{ANNOT_URL}"
+        """
+
+rule deseq2:
+    input:
+        gtf=ANNOT_GTF_GZ,
+        quants=expand(str(SALMON_QUANT_DIR / "{sample}" / "quant.sf"), sample=samples),
+        samples=SAMPLES_TSV
+    output:
+        "results/de/deseq2_results.tsv"
+    conda:
+        "envs/deseq2.yaml"
+    shell:
+        r"""
+        mkdir -p results/de
+        Rscript scripts/deseq2_tximport.R {input.samples} {SALMON_QUANT_DIR} {input.gtf} {output}
+        """
+
+# -------------------- Milestone 4/5: Figures + GO enrichment --------------------
+
+rule figures_and_go:
+    input:
+        "results/de/deseq2_results.tsv"
+    output:
+        "results/figures/volcano.pdf",
+        "results/figures/go_bp_dotplot.pdf",
+        "results/enrichment/go_bp.tsv"
+    conda:
+        "envs/analysis.yaml"
+    shell:
+        r"""
+        Rscript scripts/report_figures.R {input}
+        """

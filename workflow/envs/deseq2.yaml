@@ -1,0 +1,10 @@
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base
+  - bioconductor-tximport
+  - bioconductor-deseq2
+  - r-readr
+  - r-dplyr
+  - r-tibble

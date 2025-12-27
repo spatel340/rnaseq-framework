@@ -1,0 +1,23 @@
+# Big data / outputs
+data/raw/
+results/
+resources/
+SRR*/
+ncbi/
+.snakemake/
+
+# Logs / temp
+*.log
+tmp/
+
+# R
+.Rhistory
+.RData
+
+# Python
+__pycache__/
+*.pyc
+
+# OS/editor
+.DS_Store
+.vscode/

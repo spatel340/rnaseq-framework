@@ -1,0 +1,5 @@
+sample_id	condition	srr
+treated_1	treated	SRR1039508
+treated_2	treated	SRR1039509
+control_1	control	SRR1039512
+control_2	control	SRR1039513
